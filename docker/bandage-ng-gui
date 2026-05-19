@@ -1,0 +1,194 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    cat <<'EOF'
+bandage-ng-gui - start BandageNG in a browser-accessible noVNC session
+
+Usage:
+  bandage-ng-gui [options] [-- BandageNG-args...]
+
+Options:
+  --port PORT        noVNC HTTP listen port inside the container (default: 5801)
+  --vnc-port PORT    VNC listen port inside the container (default: 5901)
+  --display DISPLAY  X display to create (default: :1)
+  --geometry WxH     virtual screen size (default: 1280x800)
+  --url-host HOST    host shown in the printed browser URL (default: 127.0.0.1)
+  --host-port PORT   host port shown in the printed browser URL (default: --port)
+  --password PASS    require a VNC password
+  --no-password      do not require a VNC password (default)
+  -h, --help         show this help
+
+Example:
+  TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" taf-bandage-ng bandage-ng-gui
+EOF
+}
+
+port=5801
+vnc_port=5901
+display=:1
+geometry=1280x800
+url_host=127.0.0.1
+host_port=
+password=
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --port)
+            port="${2:?missing value for --port}"
+            shift 2
+            ;;
+        --vnc-port)
+            vnc_port="${2:?missing value for --vnc-port}"
+            shift 2
+            ;;
+        --display)
+            display="${2:?missing value for --display}"
+            shift 2
+            ;;
+        --geometry)
+            geometry="${2:?missing value for --geometry}"
+            shift 2
+            ;;
+        --url-host)
+            url_host="${2:?missing value for --url-host}"
+            shift 2
+            ;;
+        --host-port)
+            host_port="${2:?missing value for --host-port}"
+            shift 2
+            ;;
+        --password)
+            password="${2:?missing value for --password}"
+            shift 2
+            ;;
+        --no-password)
+            password=
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+case "$geometry" in
+    *x*) ;;
+    *)
+        echo "bandage-ng-gui: --geometry must look like 1280x800" >&2
+        exit 2
+        ;;
+esac
+
+if [ -z "$host_port" ]; then
+    host_port="$port"
+fi
+
+export DISPLAY="$display"
+export HOME="${HOME:-/root}"
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+export QT_XKB_CONFIG_ROOT="${QT_XKB_CONFIG_ROOT:-/usr/share/X11/xkb}"
+export QT_LOGGING_RULES="${QT_LOGGING_RULES:-*.debug=false;qt.qpa.*=false}"
+
+mkdir -p "$HOME/.vnc" "$HOME/.config/BandageNG" /tmp/.X11-unix
+
+xvfb_pid=
+openbox_pid=
+x11vnc_pid=
+bandage_pid=
+novnc_pid=
+auth_file=
+
+cleanup() {
+    trap - INT TERM EXIT
+    [ -n "${novnc_pid:-}" ] && kill "$novnc_pid" 2>/dev/null || true
+    [ -n "${bandage_pid:-}" ] && kill "$bandage_pid" 2>/dev/null || true
+    [ -n "${x11vnc_pid:-}" ] && kill "$x11vnc_pid" 2>/dev/null || true
+    [ -n "${openbox_pid:-}" ] && kill "$openbox_pid" 2>/dev/null || true
+    [ -n "${xvfb_pid:-}" ] && kill "$xvfb_pid" 2>/dev/null || true
+    [ -n "${novnc_pid:-}" ] && wait "$novnc_pid" 2>/dev/null || true
+    [ -n "${bandage_pid:-}" ] && wait "$bandage_pid" 2>/dev/null || true
+    [ -n "${x11vnc_pid:-}" ] && wait "$x11vnc_pid" 2>/dev/null || true
+    [ -n "${openbox_pid:-}" ] && wait "$openbox_pid" 2>/dev/null || true
+    [ -n "${xvfb_pid:-}" ] && wait "$xvfb_pid" 2>/dev/null || true
+    [ -n "${auth_file:-}" ] && rm -f "$auth_file" 2>/dev/null || true
+}
+
+on_int() {
+    cleanup
+    exit 130
+}
+
+on_term() {
+    cleanup
+    exit 143
+}
+
+trap on_int INT
+trap on_term TERM
+trap cleanup EXIT
+
+gui_url="http://${url_host}:${host_port}/vnc.html?autoconnect=1&resize=scale"
+
+cat <<EOF
+
+BandageNG GUI is starting.
+
+Open this URL after mapping the container port to the host:
+  ${gui_url}
+
+If this is running on a remote server over SSH, tunnel the port first:
+  ssh -L ${host_port}:127.0.0.1:${host_port} user@server
+
+Then open the same URL in your local browser.
+
+Press Ctrl-C to stop the BandageNG GUI session.
+
+EOF
+
+Xvfb "$display" -screen 0 "${geometry}x24" -nolisten tcp >/tmp/bandage-ng-xvfb.log 2>&1 &
+xvfb_pid=$!
+sleep 1
+
+openbox >/tmp/bandage-ng-openbox.log 2>&1 &
+openbox_pid=$!
+
+if [ -n "$password" ]; then
+    auth_file="$HOME/.vnc/passwd"
+    x11vnc -storepasswd "$password" "$auth_file" >/dev/null
+    x11vnc -display "$display" -rfbport "$vnc_port" -rfbauth "$auth_file" -forever -shared -quiet >/tmp/bandage-ng-x11vnc.log 2>&1 &
+else
+    x11vnc -display "$display" -rfbport "$vnc_port" -nopw -forever -shared -quiet >/tmp/bandage-ng-x11vnc.log 2>&1 &
+fi
+x11vnc_pid=$!
+
+BandageNG "$@" >/tmp/bandage-ng-gui.log 2>&1 &
+bandage_pid=$!
+sleep 8
+if ! kill -0 "$bandage_pid" 2>/dev/null; then
+    echo "bandage-ng-gui: BandageNG exited before the noVNC session was ready." >&2
+    cat /tmp/bandage-ng-gui.log >&2 || true
+    exit 1
+fi
+
+/opt/noVNC/utils/novnc_proxy --listen "0.0.0.0:${port}" --vnc "localhost:${vnc_port}" >/tmp/bandage-ng-novnc.log 2>&1 &
+novnc_pid=$!
+
+set +e
+wait "$novnc_pid"
+status=$?
+set -e
+if [ "$status" -ne 0 ] && [ "$status" -ne 130 ] && [ "$status" -ne 143 ]; then
+    echo "bandage-ng-gui: noVNC exited with status ${status}." >&2
+    cat /tmp/bandage-ng-novnc.log >&2 || true
+fi
+cleanup
+exit "$status"
