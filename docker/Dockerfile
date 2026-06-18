@@ -42,9 +42,9 @@ FROM --platform=$BANDAGENG_IMAGE_PLATFORM debian:13-slim AS bandage
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-ARG BANDAGENG_VERSION=2026.4.1
-ARG BANDAGENG_APPIMAGE_COMMIT=2aefa98
-ARG BANDAGENG_APPIMAGE_SHA256=b1bde8e8f1e307e036c29a1a54c02d1fddc68e8961f11aa23605247781acde6f
+ARG BANDAGENG_VERSION=2026.6.1
+ARG BANDAGENG_APPIMAGE_COMMIT=7c62642
+ARG BANDAGENG_APPIMAGE_SHA256=5e4469e54b567ff087736dbc902ccea7734f219caed2f1e4dd0eacffe97c6e60
 ARG BANDAGENG_APPIMAGE_SQUASHFS_OFFSET=944632
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked set -eux; \
@@ -134,14 +134,14 @@ RUN set -eux; \
     command -v minimap2; \
     command -v nhmmer; \
     command -v hmmsearch; \
-    BandageNG --version | grep -Fx "2026.4.1"; \
-    bandage-ng --version | grep -Fx "BandageNG 2026.4.1"; \
+    BandageNG --version | grep -Fx "2026.6.1"; \
+    bandage-ng --version | grep -Fx "BandageNG 2026.6.1"; \
     bandage-ng --help | grep -F "direct launcher for BandageNG" >/dev/null; \
     bandage-ng-gui --help | grep -F "browser-accessible noVNC session" >/dev/null
 
 WORKDIR /root
 
-ENV BANDAGENG_VERSION=2026.4.1
+ENV BANDAGENG_VERSION=2026.6.1
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV QT_XKB_CONFIG_ROOT=/usr/share/X11/xkb

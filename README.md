@@ -30,7 +30,7 @@ taf install bandage-ng
 Install the exact release:
 
 ```sh
-taf install bandage-ng 2026.4.1-r1
+taf install bandage-ng 2026.6.1-r1
 ```
 
 For local testing before the app is published to the public index:
@@ -158,12 +158,12 @@ taf-bandage-ng hmmsearch -h
 ```text
 name: bandage-ng
 command: taf-bandage-ng
-version: 2026.4.1-r1
+version: 2026.6.1-r1
 kind: tool
-image: ghcr.io/taffish/bandage-ng:2026.4.1-r1
-upstream: BandageNG v2026.4.1
-runtime version: BandageNG 2026.4.1
-upstream binary: BandageNG-Linux-2aefa98.AppImage
+image: ghcr.io/taffish/bandage-ng:2026.6.1-r1
+upstream: BandageNG v2026.6.1
+runtime version: BandageNG 2026.6.1
+upstream binary: BandageNG-Linux-7c62642.AppImage
 native platform: linux/amd64
 ```
 
@@ -171,7 +171,7 @@ native platform: linux/amd64
 
 The container image is built from `docker/Dockerfile`. It starts from
 `debian:13-slim`, downloads the official upstream
-`BandageNG-Linux-2aefa98.AppImage` asset from the `v2026.4.1` release, verifies
+`BandageNG-Linux-7c62642.AppImage` asset from the `v2026.6.1` release, verifies
 its SHA-256 checksum, and extracts it into `/opt/bandage-ng`. This keeps the
 packaged runtime aligned with the upstream Linux binary release instead of
 rebuilding the Qt application from source inside TAFFISH.
@@ -245,7 +245,7 @@ policies vary across clusters.
 
 - Project: BandageNG
 - Source: <https://github.com/asl/BandageNG>
-- Release: <https://github.com/asl/BandageNG/releases/tag/v2026.4.1>
+- Release: <https://github.com/asl/BandageNG/releases/tag/v2026.6.1>
 - Documentation: <https://github.com/asl/BandageNG/wiki>
 - License: GPL-3.0-or-later
 - Citation: upstream currently lists the BandageNG citation as TBD; for the

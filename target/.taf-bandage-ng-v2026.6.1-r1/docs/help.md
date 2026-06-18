@@ -1,4 +1,4 @@
-taf-bandage-ng 2026.4.1-r1
+taf-bandage-ng 2026.6.1-r1
 
 TAFFISH wrapper for BandageNG, a modern Bandage fork for interactive
 visualization and inspection of GFA/FASTG de novo assembly graphs.
@@ -67,7 +67,7 @@ Command-mode helpers:
   taf-bandage-ng hmmsearch -h
 
 Notes:
-  - This app packages the official BandageNG v2026.4.1 Linux AppImage.
+  - This app packages the official BandageNG v2026.6.1 Linux AppImage.
   - BLAST+, minimap2, and HMMER are included because BandageNG can call them
     for graph search workflows.
   - The helper prints the exact browser URL at startup.
@@ -81,14 +81,14 @@ Notes:
     behavior vary across clusters.
 
 Container:
-  image: ghcr.io/taffish/bandage-ng:2026.4.1-r1
+  image: ghcr.io/taffish/bandage-ng:2026.6.1-r1
   backends: apptainer, podman, docker
   native platform: linux/amd64
   arm64 Docker/Podman hosts: amd64 emulation through --platform linux/amd64
 
 Upstream:
   source: https://github.com/asl/BandageNG
-  release: https://github.com/asl/BandageNG/releases/tag/v2026.4.1
+  release: https://github.com/asl/BandageNG/releases/tag/v2026.6.1
   docs: https://github.com/asl/BandageNG/wiki
   license: GPL-3.0-or-later
   citation: BandageNG citation TBD upstream; original Bandage DOI
