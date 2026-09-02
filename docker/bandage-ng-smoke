@@ -1,0 +1,215 @@
+#!/bin/sh
+set -eu
+
+mode="${1:-}"
+
+make_fixture() {
+    fixture_dir="$1"
+    mkdir -p "$fixture_dir"
+    printf 'H\tVN:Z:1.0\nS\ta1\tACGTACGT\nS\ta2\tTTTT\nL\ta1\t+\ta2\t+\t0M\nS\tb1\tGGGG\n' >"$fixture_dir/tiny.gfa"
+}
+
+buildtime() {
+    command -v BandageNG >/dev/null
+    command -v bandage-ng >/dev/null
+    command -v bandage-ng-gui >/dev/null
+    command -v bandage-ng-smoke >/dev/null
+    test "$(BandageNG --version)" = '2026.9.1'
+    test "$(bandage-ng --version)" = 'BandageNG 2026.9.1'
+    BandageNG --help | grep -F 'BandageNG' >/dev/null
+    bandage-ng-gui --help | grep -F 'supervised browser-accessible noVNC session' >/dev/null
+    test -s /opt/bandage-ng/TAFFISH-UPSTREAM-COPYING
+    grep -Fx 'upstream_tag=v2026.9.1' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
+}
+
+identity() {
+    for command in BandageNG bandage-ng bandage-ng-gui bandage-ng-smoke Xvfb x11vnc websockify twm xdotool makeblastdb blastn tblastn minimap2 nhmmer hmmsearch curl sh; do
+        command -v "$command" >/dev/null
+    done
+    buildtime
+    grep -Fx 'upstream_commit=17665e2b57ad45138c8d809a77915b2aabfa3b24' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
+    grep -Fx 'asset=BandageNG-Linux-17665e2.AppImage' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
+    grep -Fx 'asset_sha256=a522ad48a588fcefddbcda9dbc9e6d5d8bc829f80b2fe1330cb4fd17f27300cb' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
+    bandage-ng 2>&1 | grep -F 'no X DISPLAY is available' >/dev/null
+    makeblastdb -version 2>&1 | grep -F 'makeblastdb' >/dev/null
+    blastn -version 2>&1 | grep -F 'blastn' >/dev/null
+    tblastn -version 2>&1 | grep -F 'tblastn' >/dev/null
+    minimap2 --version >/dev/null
+    nhmmer -h 2>&1 | grep -F 'HMMER' >/dev/null
+    hmmsearch -h 2>&1 | grep -F 'HMMER' >/dev/null
+}
+
+connected_component() {
+    tmp="/tmp/taf-bandage-ng-component-$$"
+    trap 'rm -rf "$tmp"' 0 1 2 3
+    make_fixture "$tmp"
+    bandage-ng info "$tmp/tiny.gfa" >"$tmp/info.txt"
+    grep -F 'Node count:' "$tmp/info.txt" >/dev/null
+    bandage-ng reduce "$tmp/tiny.gfa" "$tmp/component.gfa" \
+      --scope aroundcomponent --nodes a1 >"$tmp/reduce.log" 2>&1
+    grep -F "$(printf 'S\ta1\t')" "$tmp/component.gfa" >/dev/null
+    grep -F "$(printf 'S\ta2\t')" "$tmp/component.gfa" >/dev/null
+    ! grep -F "$(printf 'S\tb1\t')" "$tmp/component.gfa" >/dev/null
+    bandage-ng image "$tmp/tiny.gfa" "$tmp/component.svg" \
+      --scope aroundcomponent --nodes a1 >"$tmp/image.log" 2>&1
+    test -s "$tmp/component.svg"
+    grep -F '<svg' "$tmp/component.svg" >/dev/null
+}
+
+gui_session_term() {
+    tmp="/tmp/taf-bandage-ng-gui-session-$$"
+    pid=
+    trap 'test -z "$pid" || kill "$pid" 2>/dev/null || true; rm -rf "$tmp"' 0 1 2 3
+    make_fixture "$tmp"
+    bandage-ng-gui --bind-address 127.0.0.1 \
+      --port 5817 --vnc-port 5917 --display :17 --geometry 1000x720 \
+      --startup-timeout 150 -- load "$tmp/tiny.gfa" --draw >"$tmp/session.log" 2>&1 &
+    pid=$!
+    i=0
+    until grep -F 'BandageNG GUI is starting.' "$tmp/session.log" >/dev/null; do
+        kill -0 "$pid" 2>/dev/null || { cat "$tmp/session.log" >&2; exit 1; }
+        i=$((i + 1)); [ "$i" -lt 4 ] || { cat "$tmp/session.log" >&2; exit 1; }
+        sleep 1
+    done
+    ! grep -F 'BandageNG GUI is ready.' "$tmp/session.log" >/dev/null
+    grep -F 'http://127.0.0.1:5817/vnc.html?autoconnect=1&resize=scale' "$tmp/session.log" >/dev/null
+    grep -F 'ssh -N -L 5817:127.0.0.1:5817 user@server' "$tmp/session.log" >/dev/null
+    grep -F 'Press Ctrl-C to stop this GUI session.' "$tmp/session.log" >/dev/null
+    i=0
+    until curl -fsS http://127.0.0.1:5817/vnc.html >/dev/null 2>&1 \
+      && grep -F 'BandageNG GUI is ready.' "$tmp/session.log" >/dev/null; do
+        kill -0 "$pid" 2>/dev/null || { cat "$tmp/session.log" >&2; exit 1; }
+        i=$((i + 1)); [ "$i" -lt 165 ] || { cat "$tmp/session.log" >&2; exit 1; }
+        sleep 1
+    done
+    starting_line="$(grep -n -m1 'BandageNG GUI is starting.' "$tmp/session.log" | cut -d: -f1)"
+    ready_line="$(grep -n -m1 'BandageNG GUI is ready.' "$tmp/session.log" | cut -d: -f1)"
+    test "$starting_line" -lt "$ready_line"
+    runtime_log_dir="$(awk '/Internal session logs:/{getline; gsub(/^[[:space:]]+/, ""); print; exit}' "$tmp/session.log")"
+    test -d "$runtime_log_dir"
+    test -s "$runtime_log_dir/window-layout.log"
+    grep -E '^Main window: [0-9]+x[0-9]+ at -?[0-9]+,-?[0-9]+ within 1000x720 \(fit\)\.$' "$tmp/session.log" >/dev/null
+    window_id="$(DISPLAY=:17 xdotool search --onlyvisible --name 'Bandage' | sed -n '1p')"
+    test -n "$window_id"
+    window_geometry="$(DISPLAY=:17 xdotool getwindowgeometry --shell "$window_id")"
+    window_width="$(printf '%s\n' "$window_geometry" | awk -F= '$1 == "WIDTH" { print $2 }')"
+    window_height="$(printf '%s\n' "$window_geometry" | awk -F= '$1 == "HEIGHT" { print $2 }')"
+    window_x="$(printf '%s\n' "$window_geometry" | awk -F= '$1 == "X" { print $2 }')"
+    window_y="$(printf '%s\n' "$window_geometry" | awk -F= '$1 == "Y" { print $2 }')"
+    test "$window_width" -ge 900
+    test "$window_height" -ge 550
+    test "$window_x" -ge -24
+    test "$window_x" -le 80
+    test "$window_y" -ge 20
+    test "$window_y" -le 140
+    test $((window_width * window_height)) -ge 500000
+    window_title="$(DISPLAY=:17 xdotool getwindowname "$window_id")"
+    case "$window_title" in *'tiny.gfa'*) ;; *) echo "unexpected BandageNG title: $window_title" >&2; exit 1 ;; esac
+    kill -TERM "$pid"
+    status=0; wait "$pid" || status=$?; pid=
+    test "$status" -eq 143
+    grep -F 'Stopping BandageNG GUI (TERM).' "$tmp/session.log" >/dev/null
+    test ! -S /tmp/.X11-unix/X17
+}
+
+gui_startup_interrupt() {
+    tmp="/tmp/taf-bandage-ng-gui-interrupt-$$"
+    trap 'rm -rf "$tmp"' 0 1 2 3
+    mkdir -p "$tmp/bin"
+    printf '%s\n' '#!/bin/sh' 'sleep 30' 'exit 1' >"$tmp/bin/curl"
+    chmod 0755 "$tmp/bin/curl"
+    status=0
+    PATH="$tmp/bin:$PATH" timeout --preserve-status --signal=INT --kill-after=8 2 \
+      bandage-ng-gui --bind-address 127.0.0.1 --port 5818 --vnc-port 5918 \
+      --display :18 --geometry 1000x720 --startup-timeout 150 \
+      >"$tmp/session.log" 2>&1 || status=$?
+    test "$status" -eq 130
+    grep -F 'BandageNG GUI is starting.' "$tmp/session.log" >/dev/null
+    ! grep -F 'BandageNG GUI is ready.' "$tmp/session.log" >/dev/null
+    grep -F 'Stopping BandageNG GUI (Ctrl-C).' "$tmp/session.log" >/dev/null
+    test ! -S /tmp/.X11-unix/X18
+}
+
+gui_errors() {
+    tmp="/tmp/taf-bandage-ng-errors-$$"
+    trap 'rm -rf "$tmp"' 0 1 2 3
+    mkdir -p "$tmp"
+    status=0; bandage-ng-gui --geometry invalid >"$tmp/geometry.log" 2>&1 || status=$?
+    test "$status" -eq 2
+    grep -F 'must look like 1440x900' "$tmp/geometry.log" >/dev/null
+    status=0; bandage-ng-gui --port 65536 >"$tmp/port.log" 2>&1 || status=$?
+    test "$status" -eq 2
+    grep -F 'must be at most 65535' "$tmp/port.log" >/dev/null
+    status=0; bandage-ng-gui --window-top-offset -1 >"$tmp/offset.log" 2>&1 || status=$?
+    test "$status" -eq 2
+    grep -F 'must be a non-negative integer' "$tmp/offset.log" >/dev/null
+    status=0; bandage-ng-gui --geometry 640x480 >"$tmp/small.log" 2>&1 || status=$?
+    test "$status" -eq 2
+    grep -F 'too small for the fitted workbench' "$tmp/small.log" >/dev/null
+    status=0; bandage-ng-gui --unexpected >"$tmp/unknown.log" 2>&1 || status=$?
+    test "$status" -eq 2
+    grep -F 'unknown helper option' "$tmp/unknown.log" >/dev/null
+}
+
+wm_startup_failure() {
+    tmp="/tmp/taf-bandage-ng-wm-startup-failure-$$"
+    pid=
+    trap 'test -z "$pid" || kill "$pid" 2>/dev/null || true; rm -rf "$tmp"' 0 1 2 3
+    mkdir -p "$tmp/bin"
+    printf '%s\n' '#!/bin/sh' 'echo "injected twm startup failure" >&2' 'exit 42' >"$tmp/bin/twm"
+    chmod 0755 "$tmp/bin/twm"
+    PATH="$tmp/bin:$PATH" bandage-ng-gui --bind-address 127.0.0.1 \
+      --port 5819 --vnc-port 5919 --display :19 --geometry 1000x720 \
+      --startup-timeout 45 >"$tmp/session.log" 2>&1 &
+    pid=$!
+    status=0; wait "$pid" || status=$?; pid=
+    test "$status" -eq 1
+    grep -F 'BandageNG GUI is starting.' "$tmp/session.log" >/dev/null
+    ! grep -F 'BandageNG GUI is ready.' "$tmp/session.log" >/dev/null
+    grep -F 'window-manager exited before readiness' "$tmp/session.log" >/dev/null
+    grep -F 'injected twm startup failure' "$tmp/session.log" >/dev/null
+    test ! -S /tmp/.X11-unix/X19
+}
+
+wm_runtime_failure() {
+    tmp="/tmp/taf-bandage-ng-wm-runtime-failure-$$"
+    pid=
+    trap 'test -z "$pid" || kill "$pid" 2>/dev/null || true; rm -rf "$tmp"' 0 1 2 3
+    mkdir -p "$tmp"
+    bandage-ng-gui --bind-address 127.0.0.1 --port 5820 --vnc-port 5920 \
+      --display :20 --geometry 1000x720 --startup-timeout 150 \
+      >"$tmp/session.log" 2>&1 &
+    pid=$!
+    i=0
+    until grep -F 'BandageNG GUI is ready.' "$tmp/session.log" >/dev/null; do
+        kill -0 "$pid" 2>/dev/null || { cat "$tmp/session.log" >&2; exit 1; }
+        i=$((i + 1)); [ "$i" -lt 165 ] || { cat "$tmp/session.log" >&2; exit 1; }
+        sleep 1
+    done
+    runtime_log_dir="$(awk '/Internal session logs:/{getline; gsub(/^[[:space:]]+/, ""); print; exit}' "$tmp/session.log")"
+    test -s "$runtime_log_dir/window-manager.pid"
+    wm_process="$(sed -n '1p' "$runtime_log_dir/window-manager.pid")"
+    test -n "$wm_process"
+    kill -0 "$wm_process"
+    kill -KILL "$wm_process"
+    status=0; wait "$pid" || status=$?; pid=
+    test "$status" -eq 1
+    grep -F 'window-manager exited after readiness' "$tmp/session.log" >/dev/null
+    test ! -S /tmp/.X11-unix/X20
+    ! kill -0 "$wm_process" 2>/dev/null
+}
+
+case "$mode" in
+    buildtime) buildtime ;;
+    identity) identity ;;
+    connected-component) connected_component ;;
+    gui-session-term) gui_session_term ;;
+    gui-startup-interrupt) gui_startup_interrupt ;;
+    gui-errors) gui_errors ;;
+    wm-startup-failure) wm_startup_failure ;;
+    wm-runtime-failure) wm_runtime_failure ;;
+    *)
+        echo 'usage: bandage-ng-smoke {buildtime|identity|connected-component|gui-session-term|gui-startup-interrupt|gui-errors|wm-startup-failure|wm-runtime-failure}' >&2
+        exit 2
+        ;;
+esac

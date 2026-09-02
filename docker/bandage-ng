@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-BANDAGENG_VERSION="${BANDAGENG_VERSION:-2026.6.1}"
+BANDAGENG_VERSION="${BANDAGENG_VERSION:-2026.9.1}"
 BANDAGENG_BIN="${BANDAGENG_BIN:-/usr/local/bin/BandageNG}"
 
 usage() {
@@ -16,13 +16,15 @@ Usage:
 Common command-line forms:
   bandage-ng info graph.gfa
   bandage-ng image graph.gfa graph.png
+  bandage-ng image graph.gfa component.svg --scope aroundcomponent --nodes 1
   bandage-ng reduce graph.gfa reduced.gfa
   bandage-ng layout graph.gfa layout.csv
 
 Notes:
   Running BandageNG without a CLI subcommand starts the desktop GUI and
-  requires an X display. For normal TAFFISH browser access, use:
-    taf-bandage-ng bandage-ng-gui
+  requires an X display. For Docker, Podman and Apptainer browser commands,
+  use:
+    taf-bandage-ng --help
 EOF
 }
 
@@ -47,8 +49,9 @@ if [ -z "${DISPLAY:-}" ]; then
     cat >&2 <<'EOF'
 bandage-ng: no X DISPLAY is available for the BandageNG desktop GUI.
 
-For TAFFISH browser access, map the noVNC port and run:
-  TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" taf-bandage-ng bandage-ng-gui
+For TAFFISH browser access, see the installed wrapper's Docker, Podman and
+Apptainer commands:
+  taf-bandage-ng --help
 
 For headless graph operations, use a BandageNG CLI subcommand:
   taf-bandage-ng bandage-ng info graph.gfa

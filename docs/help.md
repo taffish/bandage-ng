@@ -1,95 +1,81 @@
-taf-bandage-ng 2026.6.1-r1
+taf-bandage-ng 2026.9.1-r1
 
-TAFFISH wrapper for BandageNG, a modern Bandage fork for interactive
-visualization and inspection of GFA/FASTG de novo assembly graphs.
-
-Modes:
-  GUI mode       browser-accessible BandageNG through Xvfb, x11vnc, and noVNC
-  CLI/headless   graph info, image, reduce, layout, and querypaths subcommands
+Purpose:
+  Inspect GFA/FASTG assembly graphs in a browser-served BandageNG desktop, or
+  run reproducible graph info, render, reduce, layout and querypaths commands.
 
 Usage:
-  taf-bandage-ng [TAF-APP-OPTION]
-  taf-bandage-ng bandage-ng-gui [GUI-OPTIONS] [-- BANDAGENG-ARGS...]
-  taf-bandage-ng bandage-ng [BANDAGENG-ARGS...]
-  taf-bandage-ng BandageNG [BANDAGENG-ARGS...]
-  taf-bandage-ng [IN-CONTAINER-COMMAND] [ARGS...]
+  taf-bandage-ng -- --version
+  taf-bandage-ng -- --helpall
+  taf-bandage-ng bandage-ng-gui --help
 
-TAF app options:
-  -h, --help       Show this help text
-  -v, --version    Show package and command version
-  --compile        Print generated shell code instead of running it
-  --               Stop parsing TAFFISH wrapper options
+Start the GUI with Docker:
+  TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:8765:5801" \
+  TAFFISH_CONTAINER_BACKEND=docker \
+    taf-bandage-ng bandage-ng-gui --port 5801 --host-port 8765
 
-GUI mode:
-  Docker:
-    TAFFISH_CONTAINER_BACKEND=docker \
-    TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" \
-    taf-bandage-ng bandage-ng-gui
+Start the GUI with Podman:
+  TAFFISH_PODMAN_RUN_ARGS="-p 127.0.0.1:8765:5801" \
+  TAFFISH_CONTAINER_BACKEND=podman \
+    taf-bandage-ng bandage-ng-gui --port 5801 --host-port 8765
 
-  Podman:
-    TAFFISH_CONTAINER_BACKEND=podman \
-    TAFFISH_PODMAN_RUN_ARGS="-p 127.0.0.1:5801:5801" \
-    taf-bandage-ng bandage-ng-gui
+Start the GUI with Apptainer:
+  TAFFISH_CONTAINER_BACKEND=apptainer \
+    taf-bandage-ng bandage-ng-gui --bind-address 127.0.0.1 \
+      --port 8765 --host-port 8765
+  Apptainer shares the host network and has no -p mapping; use an unused port.
 
-  Open after startup:
-    http://127.0.0.1:5801/vnc.html?autoconnect=1&resize=scale
+GUI steps:
+  1. Wait for "BandageNG GUI is ready.", then open the printed host URL.
+  2. Load a GFA/FASTG graph, draw and inspect nodes, paths or graph searches.
+  3. Press Ctrl-C in the launching terminal to stop the complete session.
+  Preload a graph with:
+    taf-bandage-ng bandage-ng-gui -- load graph.gfa --draw
+  If the upstream canvas is still blank, click "Draw graph" in the left panel.
+  Logs and observed window geometry are printed before/at readiness.
 
-  bandage-ng-gui also prints this URL when it starts.
+Remote GUI access:
+  Keep the service on loopback and run locally:
+    ssh -N -L 8765:127.0.0.1:8765 user@server
+  Then open the printed URL. noVNC is plain HTTP; protect sensitive graphs.
 
-  Alternate host port:
-    TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5802:5801" \
-    taf-bandage-ng bandage-ng-gui --host-port 5802
-
-  SSH tunnel:
-    ssh -L 5801:127.0.0.1:5801 user@server
-
-  Useful options:
-    --geometry WxH, --port PORT, --host-port PORT, --password PASS
-
-CLI/headless mode:
-  taf-bandage-ng bandage-ng --version
-  taf-bandage-ng bandage-ng --help
+Headless graph tasks:
   taf-bandage-ng bandage-ng info graph.gfa
   taf-bandage-ng bandage-ng image graph.gfa graph.svg
   taf-bandage-ng bandage-ng reduce graph.gfa reduced.gfa
-  taf-bandage-ng bandage-ng layout graph.gfa layout.csv
-  taf-bandage-ng bandage-ng querypaths graph.gfa queries.fasta
+  taf-bandage-ng bandage-ng layout graph.gfa graph.layout
+  taf-bandage-ng bandage-ng querypaths graph.gfa queries.fa result
 
-Default upstream command:
-  taf-bandage-ng -- --version
-  taf-bandage-ng -- --help
+Paths containing spaces (TAFFISH 0.11.0):
+  Preserve each such path as a literal quoted argument:
+    taf-bandage-ng bandage-ng image \
+      '"graph with spaces.gfa"' '"output with spaces.svg"'
 
-Command-mode helpers:
+Draw one complete connected component (new in 2026.9.1):
+  taf-bandage-ng bandage-ng image graph.gfa component.svg \
+    --scope aroundcomponent --nodes NODE_ID
+  Use --path NAME or --walk NAME instead of/in addition to --nodes. Multiple
+  seeds are comma-separated. At least one seed is required.
+
+Inputs and outputs:
+  Inputs: GFA/FASTG assembly graphs; querypaths also needs query FASTA.
+  Images: .svg, .png or .jpg. Layout output: .layout or .tsv.
+  Reduce writes GFA; querypaths writes a TSV prefix and optional FASTA files.
+  Work in a writable directory so output paths remain available on the host.
+
+Packaged graph-search tools:
   taf-bandage-ng makeblastdb -version
   taf-bandage-ng blastn -version
   taf-bandage-ng minimap2 --version
-  taf-bandage-ng nhmmer -h
   taf-bandage-ng hmmsearch -h
 
-Notes:
-  - This app packages the official BandageNG v2026.6.1 Linux AppImage.
-  - BLAST+, minimap2, and HMMER are included because BandageNG can call them
-    for graph search workflows.
-  - The helper prints the exact browser URL at startup.
-  - Docker/Podman runs embed --init for more predictable Ctrl-C cleanup.
-  - The upstream Linux AppImage is amd64. Docker/Podman arm64 hosts use
-    amd64 emulation declared by this app; this is not native arm64 support.
-  - Use --password if exposing noVNC beyond localhost.
-  - The example binds the host port to 127.0.0.1. On shared machines, keep this
-    local binding unless you have explicit access control.
-  - Apptainer GUI/noVNC use is site-dependent because port, network, and X/VNC
-    behavior vary across clusters.
+Runtime boundaries:
+  The official Linux AppImage is native linux/amd64 only. Docker/Podman on
+  arm64 use app-declared amd64 emulation; this is not native arm64 support.
+  Apptainer requires an amd64 Linux host.
+  The GUI's Logan download action is explicit network I/O for one accession;
+  it is not a packaged reusable resource. Save it to a writable mounted path.
+  Normal offline graph inspection and smoke do not download data.
+  Use --password only when required; prefer loopback plus SSH over exposure.
 
-Container:
-  image: ghcr.io/taffish/bandage-ng:2026.6.1-r1
-  backends: apptainer, podman, docker
-  native platform: linux/amd64
-  arm64 Docker/Podman hosts: amd64 emulation through --platform linux/amd64
-
-Upstream:
-  source: https://github.com/asl/BandageNG
-  release: https://github.com/asl/BandageNG/releases/tag/v2026.6.1
-  docs: https://github.com/asl/BandageNG/wiki
-  license: GPL-3.0-or-later
-  citation: BandageNG citation TBD upstream; original Bandage DOI
-    10.1093/bioinformatics/btv383, PMID 26099265
+More documentation: https://github.com/taffish/bandage-ng

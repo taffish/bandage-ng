@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
 ARG BANDAGENG_IMAGE_PLATFORM=linux/amd64
+ARG DEBIAN_IMAGE=debian:13-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
 
-FROM --platform=$BANDAGENG_IMAGE_PLATFORM debian:13-slim AS novnc
+FROM --platform=$BANDAGENG_IMAGE_PLATFORM ${DEBIAN_IMAGE} AS novnc
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -38,14 +39,16 @@ RUN set -eux; \
     mv "/opt/websockify-${WEBSOCKIFY_VERSION}" /opt/websockify; \
     rm -f /tmp/novnc.tar.gz /tmp/websockify.tar.gz
 
-FROM --platform=$BANDAGENG_IMAGE_PLATFORM debian:13-slim AS bandage
+FROM --platform=$BANDAGENG_IMAGE_PLATFORM ${DEBIAN_IMAGE} AS bandage
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-ARG BANDAGENG_VERSION=2026.6.1
-ARG BANDAGENG_APPIMAGE_COMMIT=7c62642
-ARG BANDAGENG_APPIMAGE_SHA256=5e4469e54b567ff087736dbc902ccea7734f219caed2f1e4dd0eacffe97c6e60
+ARG BANDAGENG_VERSION=2026.9.1
+ARG BANDAGENG_UPSTREAM_COMMIT=17665e2b57ad45138c8d809a77915b2aabfa3b24
+ARG BANDAGENG_APPIMAGE_COMMIT=17665e2
+ARG BANDAGENG_APPIMAGE_SHA256=a522ad48a588fcefddbcda9dbc9e6d5d8bc829f80b2fe1330cb4fd17f27300cb
 ARG BANDAGENG_APPIMAGE_SQUASHFS_OFFSET=944632
+ARG BANDAGENG_COPYING_SHA256=8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked set -eux; \
     rm -f /etc/apt/apt.conf.d/docker-clean; \
@@ -68,11 +71,23 @@ RUN set -eux; \
       -o /tmp/BandageNG.AppImage \
       "https://github.com/asl/BandageNG/releases/download/v${BANDAGENG_VERSION}/BandageNG-Linux-${BANDAGENG_APPIMAGE_COMMIT}.AppImage"; \
     echo "${BANDAGENG_APPIMAGE_SHA256}  /tmp/BandageNG.AppImage" | sha256sum -c -; \
+    curl --http1.1 -fL --retry 5 --retry-delay 5 --retry-all-errors \
+      -o /tmp/BandageNG-COPYING \
+      "https://raw.githubusercontent.com/asl/BandageNG/${BANDAGENG_UPSTREAM_COMMIT}/COPYING"; \
+    echo "${BANDAGENG_COPYING_SHA256}  /tmp/BandageNG-COPYING" | sha256sum -c -; \
     mkdir -p /opt/bandage-ng; \
     unsquashfs -q -f -d /opt/bandage-ng -o "${BANDAGENG_APPIMAGE_SQUASHFS_OFFSET}" /tmp/BandageNG.AppImage; \
-    rm -rf /tmp/BandageNG.AppImage
+    install -Dm0644 /tmp/BandageNG-COPYING /opt/bandage-ng/TAFFISH-UPSTREAM-COPYING; \
+    printf '%s\n' \
+      "upstream_tag=v${BANDAGENG_VERSION}" \
+      "upstream_commit=${BANDAGENG_UPSTREAM_COMMIT}" \
+      "asset=BandageNG-Linux-${BANDAGENG_APPIMAGE_COMMIT}.AppImage" \
+      "asset_sha256=${BANDAGENG_APPIMAGE_SHA256}" \
+      "appimage_squashfs_offset=${BANDAGENG_APPIMAGE_SQUASHFS_OFFSET}" \
+      > /opt/bandage-ng/TAFFISH-SOURCE.txt; \
+    rm -f /tmp/BandageNG.AppImage /tmp/BandageNG-COPYING
 
-FROM --platform=$BANDAGENG_IMAGE_PLATFORM debian:13-slim
+FROM --platform=$BANDAGENG_IMAGE_PLATFORM ${DEBIAN_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -101,11 +116,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked set -eux; \
         libxcb-cursor0 \
         minimap2 \
         ncbi-blast+ \
-        openbox \
         procps \
         python3-minimal \
+        twm \
         x11vnc \
         xauth \
+        xdotool \
         xvfb \
       && break; \
       if [ "$i" = "5" ]; then exit 1; fi; \
@@ -117,31 +133,31 @@ COPY --from=novnc /opt/noVNC/ /opt/noVNC/
 COPY --from=novnc /opt/websockify/ /opt/websockify/
 COPY docker/bandage-ng /usr/local/bin/bandage-ng
 COPY docker/bandage-ng-gui /usr/local/bin/bandage-ng-gui
+COPY docker/bandage-ng-smoke /usr/local/bin/bandage-ng-smoke
 
 RUN set -eux; \
     printf '%s\n' '#!/bin/sh' 'exec /opt/websockify/run "$@"' > /usr/local/bin/websockify; \
-    chmod +x /opt/bandage-ng/AppRun /opt/websockify/run /usr/local/bin/BandageNG /usr/local/bin/bandage-ng /usr/local/bin/bandage-ng-gui /usr/local/bin/websockify; \
+    chmod +x /opt/bandage-ng/AppRun /opt/websockify/run /usr/local/bin/BandageNG /usr/local/bin/bandage-ng /usr/local/bin/bandage-ng-gui /usr/local/bin/bandage-ng-smoke /usr/local/bin/websockify; \
     command -v BandageNG; \
     command -v bandage-ng; \
     command -v bandage-ng-gui; \
+    command -v bandage-ng-smoke; \
     command -v Xvfb; \
     command -v x11vnc; \
     command -v websockify; \
-    command -v openbox; \
+    command -v twm; \
+    command -v xdotool; \
     command -v makeblastdb; \
     command -v blastn; \
     command -v tblastn; \
     command -v minimap2; \
     command -v nhmmer; \
     command -v hmmsearch; \
-    BandageNG --version | grep -Fx "2026.6.1"; \
-    bandage-ng --version | grep -Fx "BandageNG 2026.6.1"; \
-    bandage-ng --help | grep -F "direct launcher for BandageNG" >/dev/null; \
-    bandage-ng-gui --help | grep -F "browser-accessible noVNC session" >/dev/null
+    bandage-ng-smoke buildtime
 
 WORKDIR /root
 
-ENV BANDAGENG_VERSION=2026.6.1
+ENV BANDAGENG_VERSION=2026.9.1
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV QT_XKB_CONFIG_ROOT=/usr/share/X11/xkb
