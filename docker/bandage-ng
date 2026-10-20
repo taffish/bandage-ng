@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-BANDAGENG_VERSION="${BANDAGENG_VERSION:-2026.9.1}"
+BANDAGENG_VERSION="${BANDAGENG_VERSION:-2026.10.1}"
 BANDAGENG_BIN="${BANDAGENG_BIN:-/usr/local/bin/BandageNG}"
 
 usage() {
@@ -32,6 +32,9 @@ case "${1:-}" in
     -h|--help)
         usage
         exit 0
+        ;;
+    --helpall)
+        exec "$BANDAGENG_BIN" "$@"
         ;;
     -v|--version)
         printf 'BandageNG %s\n' "$BANDAGENG_VERSION"

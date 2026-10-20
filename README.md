@@ -8,9 +8,9 @@ Package identity:
 - name: `bandage-ng`
 - command: `taf-bandage-ng`
 - kind: `tool`
-- version: `2026.9.1-r1`
+- version: `2026.10.1-r1`
 - TAFFISH packaging license: Apache-2.0
-- upstream release: BandageNG `v2026.9.1`
+- upstream release: BandageNG `v2026.10.1`
 - native image platform: `linux/amd64`
 
 ## What This App Packages
@@ -25,9 +25,10 @@ subcommands. This app provides both surfaces:
 - `bandage-ng-smoke`: packaging and GUI-lifecycle self-test;
 - BLAST+, minimap2, and HMMER, which BandageNG invokes for graph searches.
 
-Version `2026.9.1` adds drawing/reducing the complete connected component that
-contains selected nodes, paths, or walks. The upstream Qt bundle was also
-updated.
+Version `2026.10.1` fixes integer `dp`/`DP` coverage tags in GFA files while
+retaining floating-point values. Connected-component scopes from `2026.9.1`
+remain available. The official upstream executable and algorithms are unchanged
+by this packaging.
 
 ## Scope
 
@@ -54,14 +55,15 @@ app checkout. `docs/help.md` intentionally documents only installed-wrapper
 commands.
 
 For local GUI development, do not use long-running `taf run` with TAFFISH
-0.11.0: that entry currently buffers child output and does not propagate
-Ctrl-C cleanup correctly. Build and use the real target wrapper instead:
+0.11.0: this candidate's audit found buffered child output and Ctrl-C returning
+1 rather than the session contract's 130 (no container remained in that probe).
+Build and use the real target wrapper instead:
 
 ```sh
 taf build
 TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:8765:5801" \
 TAFFISH_CONTAINER_BACKEND=docker \
-target/taf-bandage-ng-v2026.9.1-r1 bandage-ng-gui \
+target/taf-bandage-ng-v2026.10.1-r1 bandage-ng-gui \
   --port 5801 --host-port 8765
 ```
 
@@ -105,10 +107,21 @@ the graph is already loaded.
 
 The helper prints the URL, SSH command, stop instruction, log directory, and
 requested layout before starting the first long-running process. Readiness
-requires Xvfb, twm, x11vnc, noVNC, and a stable visible BandageNG window.
+requires Xvfb, twm, x11vnc, noVNC, and a visible fitted BandageNG window,
+owned listening sockets, a session-specific HTTP marker, and a real RFB
+handshake (or VNC authentication challenge when a password is configured).
 All five components remain supervised after readiness; a critical component
 failure is reported with its log. Ctrl-C returns 130 and TERM returns 143 after
-bounded cleanup.
+bounded cleanup. Each session uses an atomically created private directory.
+TERM verification targets the attached Docker/Podman client, and the controlled
+terminal session process group for Apptainer. Sending TERM only to an Apptainer
+runtime-parent PID does not forward it in the tested 1.5.3 environment. Use
+terminal Ctrl-C for normal interactive shutdown; PID-only service-manager
+integration is not supported by these wrapper examples.
+Owned process groups and recorded X11 socket/lock identities are cleaned even
+after early interruption; occupied/foreign endpoints are refused, not removed.
+Use `--log-dir DIRECTORY` under a writable host bind to retain private logs;
+default temporary logs disappear when a disposable container exits.
 
 The default desktop is `1440x900`. The main workbench is fitted below a
 48-pixel top safe area so its title and menus remain clear of noVNC chrome.
@@ -153,7 +166,7 @@ taf-bandage-ng bandage-ng querypaths graph.gfa queries.fa result
 TAFFISH 0.11.0 automatic command mode removes ordinary shell quoting before
 the container command is reconstructed. For an input or output path containing
 spaces, preserve literal double quotes inside a shell-quoted argument. This
-exact form is validated with the real Docker wrapper:
+exact form is used by the real-wrapper backend checks:
 
 ```sh
 taf-bandage-ng bandage-ng image \
@@ -195,8 +208,11 @@ taf-bandage-ng hmmsearch -h
 | GUI Logan download | user-selected Logan accession and unitigs/contigs choice | one `.fa.zst` in a user-selected writable directory |
 
 Run in a writable host directory or use an explicit backend bind for persistent
-outputs. The helper itself stores only ephemeral configuration, HOME, logs, and
-X runtime files under a per-session `/tmp/bandage-ng-gui-*` directory.
+outputs. Configuration, HOME, logs and runtime state use a private session root:
+by default `/tmp/bandage-ng-gui-*`, or a unique child of an explicit `--log-dir`.
+With Docker's default root user, persistent private logs are root-owned; use a
+site-approved matching host UID/GID or inspect them through Docker. The helper
+does not loosen existing directory permissions or change ownership.
 
 ## Resources, Network, and Dependencies
 
@@ -219,12 +235,12 @@ advertised upstream functionality incomplete.
 ## Image and Provenance
 
 The Dockerfile uses the exact amd64 manifest for `debian:13-slim`, downloads
-the official `BandageNG-Linux-17665e2.AppImage`, verifies SHA-256
-`a522ad48a588fcefddbcda9dbc9e6d5d8bc829f80b2fe1330cb4fd17f27300cb`,
+the official `BandageNG-Linux-4ac44b0.AppImage`, verifies SHA-256
+`8db0a2f0ee7c1fadd8c76b88ea41be721116b94a30d9ecc9ed6c091e5ebb608a`,
 and extracts its SquashFS payload at offset `944632`. It records:
 
-- upstream tag `v2026.9.1`;
-- upstream commit `17665e2b57ad45138c8d809a77915b2aabfa3b24`;
+- upstream tag `v2026.10.1`;
+- upstream commit `4ac44b0cecbc056a212e8d65d27e3fcf4c0ebbc7`;
 - asset name, digest, and extraction offset;
 - the pinned upstream GPL-3.0 license text.
 
@@ -232,11 +248,15 @@ The noVNC `1.7.0` and websockify `0.13.0` source archives are independently
 checksummed. Debian build caches do not enter the final image, and apt lists are
 removed in the same installation layers. The lightweight `twm` window manager
 avoids pulling a larger desktop/rendering stack solely for window placement.
+Fixed digests verify downloaded bytes, not permanent upstream retention.
+Debian APT dependencies come from live repositories and can change over time;
+the Dockerfile identifies this rebuild boundary. A future build failure needs
+fresh source/repository checks, not an unchecked checksum replacement.
 
 ## Testing
 
 The manifest smoke suite runs each command in a fresh offline container. It
-checks identity/provenance, upstream and launcher versions, every packaged
+checks identity/provenance, integer/floating GFA depth preservation, upstream and launcher versions, every packaged
 external search executable, a tiny GFA info path, connected-component
 `reduce`, connected-component SVG rendering, GUI starting-before-ready,
 HTTP/window readiness, fitted geometry, TERM 143, startup INT 130, invalid
@@ -245,7 +265,7 @@ arguments, and window-manager failure before and after readiness.
 The same exact commands are also run with a read-only image root and only an
 explicit writable `/tmp`. Docker/Podman receipts, an actual read-only Apptainer
 SIF derived from the same candidate OCI content, real-wrapper runs, browser
-pointer/menu evidence, path-with-spaces handling, real GUI SVG export,
+pointer/menu evidence, path-with-spaces handling, real GUI image export,
 image-size profiling, and dry-run publication are final candidate gates; their
 current result is reported in the release handoff rather than hard-coded into
 this immutable project description.
@@ -277,5 +297,5 @@ citation as TBD. For the original Bandage publication, cite Wick et al. (2015),
 PMID 26099265.
 
 - source: <https://github.com/asl/BandageNG>
-- release: <https://github.com/asl/BandageNG/releases/tag/v2026.9.1>
+- release: <https://github.com/asl/BandageNG/releases/tag/v2026.10.1>
 - documentation: <https://github.com/asl/BandageNG/wiki>

@@ -2,6 +2,30 @@
 set -eu
 
 mode="${1:-}"
+tmp=
+pid=
+
+# Always return the original failure, with bounded diagnostics before cleanup.
+cleanup() {
+    code=$?
+    trap - 0 1 2 3 15
+    if [ -n "$pid" ]; then
+        kill -TERM "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    fi
+    if [ "$code" -ne 0 ] && [ -n "$tmp" ]; then
+        printf 'bandage-ng-smoke: mode=%s exit=%s\n' "$mode" "$code" >&2
+        find "$tmp" -type f \( -name '*.log' -o -name '*.txt' \) \
+          -exec sh -c 'for log do printf "Log: %s\n" "$log" >&2; tail -n 80 "$log" >&2; done' sh {} +
+    fi
+    if [ -n "$tmp" ]; then rm -rf -- "$tmp"; fi
+    exit "$code"
+}
+trap cleanup 0
+trap 'exit 129' 1
+trap 'exit 130' 2
+trap 'exit 131' 3
+trap 'exit 143' 15
 
 make_fixture() {
     fixture_dir="$1"
@@ -14,12 +38,12 @@ buildtime() {
     command -v bandage-ng >/dev/null
     command -v bandage-ng-gui >/dev/null
     command -v bandage-ng-smoke >/dev/null
-    test "$(BandageNG --version)" = '2026.9.1'
-    test "$(bandage-ng --version)" = 'BandageNG 2026.9.1'
+    test "$(BandageNG --version)" = '2026.10.1'
+    test "$(bandage-ng --version)" = 'BandageNG 2026.10.1'
     BandageNG --help | grep -F 'BandageNG' >/dev/null
     bandage-ng-gui --help | grep -F 'supervised browser-accessible noVNC session' >/dev/null
     test -s /opt/bandage-ng/TAFFISH-UPSTREAM-COPYING
-    grep -Fx 'upstream_tag=v2026.9.1' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
+    grep -Fx 'upstream_tag=v2026.10.1' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
 }
 
 identity() {
@@ -27,9 +51,9 @@ identity() {
         command -v "$command" >/dev/null
     done
     buildtime
-    grep -Fx 'upstream_commit=17665e2b57ad45138c8d809a77915b2aabfa3b24' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
-    grep -Fx 'asset=BandageNG-Linux-17665e2.AppImage' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
-    grep -Fx 'asset_sha256=a522ad48a588fcefddbcda9dbc9e6d5d8bc829f80b2fe1330cb4fd17f27300cb' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
+    grep -Fx 'upstream_commit=4ac44b0cecbc056a212e8d65d27e3fcf4c0ebbc7' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
+    grep -Fx 'asset=BandageNG-Linux-4ac44b0.AppImage' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
+    grep -Fx 'asset_sha256=8db0a2f0ee7c1fadd8c76b88ea41be721116b94a30d9ecc9ed6c091e5ebb608a' /opt/bandage-ng/TAFFISH-SOURCE.txt >/dev/null
     bandage-ng 2>&1 | grep -F 'no X DISPLAY is available' >/dev/null
     makeblastdb -version 2>&1 | grep -F 'makeblastdb' >/dev/null
     blastn -version 2>&1 | grep -F 'blastn' >/dev/null
@@ -40,8 +64,7 @@ identity() {
 }
 
 connected_component() {
-    tmp="/tmp/taf-bandage-ng-component-$$"
-    trap 'rm -rf "$tmp"' 0 1 2 3
+    tmp="$(mktemp -d /tmp/taf-bandage-ng-component.XXXXXX)"
     make_fixture "$tmp"
     bandage-ng info "$tmp/tiny.gfa" >"$tmp/info.txt"
     grep -F 'Node count:' "$tmp/info.txt" >/dev/null
@@ -56,10 +79,29 @@ connected_component() {
     grep -F '<svg' "$tmp/component.svg" >/dev/null
 }
 
+numeric_depth() {
+    tmp="$(mktemp -d /tmp/taf-bandage-ng-depth.XXXXXX)"
+    printf 'H\tVN:Z:1.0\nS\t1\tACGTACGT\tdp:i:42\nS\t2\tTTTTGGGG\tDP:f:3.5\nS\t3\tAAAACCCC\tDP:i:7\nL\t1\t+\t2\t+\t0M\n' >"$tmp/depth.gfa"
+    bandage-ng info "$tmp/depth.gfa" >"$tmp/info.log" 2>&1
+    grep -F 'Node count:' "$tmp/info.log"
+    bandage-ng reduce "$tmp/depth.gfa" "$tmp/normalized.gfa" >"$tmp/reduce.log" 2>&1
+    python3 - "$tmp/normalized.gfa" <<'PY'
+import sys
+values = {}
+for line in open(sys.argv[1]):
+    f = line.rstrip().split('\t')
+    if f[0] == 'S':
+        tags = [x for x in f[3:] if x[:3].lower() == 'dp:']
+        assert len(tags) == 1, f
+        values[f[1]] = float(tags[0].split(':')[-1])
+assert values == {'1': 42.0, '2': 3.5, '3': 7.0}, values
+print('numeric-depth PASS: integer and floating DP/dp retained')
+PY
+}
+
 gui_session_term() {
-    tmp="/tmp/taf-bandage-ng-gui-session-$$"
+    tmp="$(mktemp -d /tmp/taf-bandage-ng-gui-session.XXXXXX)"
     pid=
-    trap 'test -z "$pid" || kill "$pid" 2>/dev/null || true; rm -rf "$tmp"' 0 1 2 3
     make_fixture "$tmp"
     bandage-ng-gui --bind-address 127.0.0.1 \
       --port 5817 --vnc-port 5917 --display :17 --geometry 1000x720 \
@@ -113,11 +155,10 @@ gui_session_term() {
 }
 
 gui_startup_interrupt() {
-    tmp="/tmp/taf-bandage-ng-gui-interrupt-$$"
-    trap 'rm -rf "$tmp"' 0 1 2 3
+    tmp="$(mktemp -d /tmp/taf-bandage-ng-gui-interrupt.XXXXXX)"
     mkdir -p "$tmp/bin"
-    printf '%s\n' '#!/bin/sh' 'sleep 30' 'exit 1' >"$tmp/bin/curl"
-    chmod 0755 "$tmp/bin/curl"
+    printf '%s\n' '#!/bin/sh' 'exec sleep 30' >"$tmp/bin/BandageNG"
+    chmod 0755 "$tmp/bin/BandageNG"
     status=0
     PATH="$tmp/bin:$PATH" timeout --preserve-status --signal=INT --kill-after=8 2 \
       bandage-ng-gui --bind-address 127.0.0.1 --port 5818 --vnc-port 5918 \
@@ -131,15 +172,14 @@ gui_startup_interrupt() {
 }
 
 gui_errors() {
-    tmp="/tmp/taf-bandage-ng-errors-$$"
-    trap 'rm -rf "$tmp"' 0 1 2 3
+    tmp="$(mktemp -d /tmp/taf-bandage-ng-errors.XXXXXX)"
     mkdir -p "$tmp"
     status=0; bandage-ng-gui --geometry invalid >"$tmp/geometry.log" 2>&1 || status=$?
     test "$status" -eq 2
     grep -F 'must look like 1440x900' "$tmp/geometry.log" >/dev/null
     status=0; bandage-ng-gui --port 65536 >"$tmp/port.log" 2>&1 || status=$?
     test "$status" -eq 2
-    grep -F 'must be at most 65535' "$tmp/port.log" >/dev/null
+    grep -F 'at most 65535' "$tmp/port.log" >/dev/null
     status=0; bandage-ng-gui --window-top-offset -1 >"$tmp/offset.log" 2>&1 || status=$?
     test "$status" -eq 2
     grep -F 'must be a non-negative integer' "$tmp/offset.log" >/dev/null
@@ -148,13 +188,12 @@ gui_errors() {
     grep -F 'too small for the fitted workbench' "$tmp/small.log" >/dev/null
     status=0; bandage-ng-gui --unexpected >"$tmp/unknown.log" 2>&1 || status=$?
     test "$status" -eq 2
-    grep -F 'unknown helper option' "$tmp/unknown.log" >/dev/null
+    grep -F 'unrecognized arguments' "$tmp/unknown.log" >/dev/null
 }
 
 wm_startup_failure() {
-    tmp="/tmp/taf-bandage-ng-wm-startup-failure-$$"
+    tmp="$(mktemp -d /tmp/taf-bandage-ng-wm-startup-failure.XXXXXX)"
     pid=
-    trap 'test -z "$pid" || kill "$pid" 2>/dev/null || true; rm -rf "$tmp"' 0 1 2 3
     mkdir -p "$tmp/bin"
     printf '%s\n' '#!/bin/sh' 'echo "injected twm startup failure" >&2' 'exit 42' >"$tmp/bin/twm"
     chmod 0755 "$tmp/bin/twm"
@@ -172,9 +211,8 @@ wm_startup_failure() {
 }
 
 wm_runtime_failure() {
-    tmp="/tmp/taf-bandage-ng-wm-runtime-failure-$$"
+    tmp="$(mktemp -d /tmp/taf-bandage-ng-wm-runtime-failure.XXXXXX)"
     pid=
-    trap 'test -z "$pid" || kill "$pid" 2>/dev/null || true; rm -rf "$tmp"' 0 1 2 3
     mkdir -p "$tmp"
     bandage-ng-gui --bind-address 127.0.0.1 --port 5820 --vnc-port 5920 \
       --display :20 --geometry 1000x720 --startup-timeout 150 \
@@ -203,13 +241,14 @@ case "$mode" in
     buildtime) buildtime ;;
     identity) identity ;;
     connected-component) connected_component ;;
+    numeric-depth) numeric_depth ;;
     gui-session-term) gui_session_term ;;
     gui-startup-interrupt) gui_startup_interrupt ;;
     gui-errors) gui_errors ;;
     wm-startup-failure) wm_startup_failure ;;
     wm-runtime-failure) wm_runtime_failure ;;
     *)
-        echo 'usage: bandage-ng-smoke {buildtime|identity|connected-component|gui-session-term|gui-startup-interrupt|gui-errors|wm-startup-failure|wm-runtime-failure}' >&2
+        echo 'usage: bandage-ng-smoke {buildtime|identity|connected-component|numeric-depth|gui-session-term|gui-startup-interrupt|gui-errors|wm-startup-failure|wm-runtime-failure}' >&2
         exit 2
         ;;
 esac

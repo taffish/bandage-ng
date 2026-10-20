@@ -1,5 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
+# Fixed base/source digests detect content changes, not permanent availability.
+# Debian's live APT repositories below can change dependency versions or retire
+# packages. On failure, re-check the official repository and create a successor;
+# do not silently replace digests or claim a permanently reproducible snapshot.
+# The official AppImage and noVNC/websockify tag archives have the same retention
+# boundary. Verify any newly obtained bytes before changing a pinned checksum.
+
 ARG BANDAGENG_IMAGE_PLATFORM=linux/amd64
 ARG DEBIAN_IMAGE=debian:13-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
 
@@ -43,10 +50,10 @@ FROM --platform=$BANDAGENG_IMAGE_PLATFORM ${DEBIAN_IMAGE} AS bandage
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-ARG BANDAGENG_VERSION=2026.9.1
-ARG BANDAGENG_UPSTREAM_COMMIT=17665e2b57ad45138c8d809a77915b2aabfa3b24
-ARG BANDAGENG_APPIMAGE_COMMIT=17665e2
-ARG BANDAGENG_APPIMAGE_SHA256=a522ad48a588fcefddbcda9dbc9e6d5d8bc829f80b2fe1330cb4fd17f27300cb
+ARG BANDAGENG_VERSION=2026.10.1
+ARG BANDAGENG_UPSTREAM_COMMIT=4ac44b0cecbc056a212e8d65d27e3fcf4c0ebbc7
+ARG BANDAGENG_APPIMAGE_COMMIT=4ac44b0
+ARG BANDAGENG_APPIMAGE_SHA256=8db0a2f0ee7c1fadd8c76b88ea41be721116b94a30d9ecc9ed6c091e5ebb608a
 ARG BANDAGENG_APPIMAGE_SQUASHFS_OFFSET=944632
 ARG BANDAGENG_COPYING_SHA256=8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903
 
@@ -120,6 +127,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked set -eux; \
         python3-minimal \
         twm \
         x11vnc \
+        x11-utils \
         xauth \
         xdotool \
         xvfb \
@@ -134,6 +142,8 @@ COPY --from=novnc /opt/websockify/ /opt/websockify/
 COPY docker/bandage-ng /usr/local/bin/bandage-ng
 COPY docker/bandage-ng-gui /usr/local/bin/bandage-ng-gui
 COPY docker/bandage-ng-smoke /usr/local/bin/bandage-ng-smoke
+COPY docker/rfb-probe.py /usr/local/libexec/bandage-ng/rfb-probe.py
+COPY docker/session-contract.py /usr/local/libexec/bandage-ng/session-contract.py
 
 RUN set -eux; \
     printf '%s\n' '#!/bin/sh' 'exec /opt/websockify/run "$@"' > /usr/local/bin/websockify; \
@@ -157,7 +167,7 @@ RUN set -eux; \
 
 WORKDIR /root
 
-ENV BANDAGENG_VERSION=2026.9.1
+ENV BANDAGENG_VERSION=2026.10.1
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV QT_XKB_CONFIG_ROOT=/usr/share/X11/xkb

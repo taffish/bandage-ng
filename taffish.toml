@@ -1,7 +1,7 @@
 [package]
 name = "bandage-ng"
 kind = "tool"
-version = "2026.9.1"
+version = "2026.10.1"
 release = 1
 license = "Apache-2.0"
 main = "src/main.taf"
@@ -17,7 +17,7 @@ pipe = true
 command_mode = true
 
 [container]
-image = "ghcr.io/taffish/bandage-ng:2026.9.1-r1"
+image = "ghcr.io/taffish/bandage-ng:2026.10.1-r1"
 dockerfile = "docker/Dockerfile"
 build_platforms = "linux/amd64"
 
@@ -25,17 +25,17 @@ build_platforms = "linux/amd64"
 domain = "bio"
 categories = ["genomics", "assembly", "assembly-graph", "visualization", "viewer"]
 keywords = ["bandage-ng", "bandageng", "bandage", "gfa", "fastg", "assembly-graph", "connected-component", "spades", "megahit", "novnc", "vnc"]
-description = "BandageNG 2026.9.1 for interactive assembly-graph visualization through a supervised browser-accessible noVNC session, with reproducible headless graph commands included."
+description = "BandageNG 2026.10.1 for interactive assembly-graph visualization through a supervised browser-accessible noVNC session, with reproducible headless graph commands included."
 
 [upstream]
 name = "BandageNG"
 type = "github"
 repo = "asl/BandageNG"
 homepage = "https://github.com/asl/BandageNG/wiki"
-release_url = "https://github.com/asl/BandageNG/releases/tag/v2026.9.1"
-downloads = "https://github.com/asl/BandageNG/releases/download/v2026.9.1/BandageNG-Linux-17665e2.AppImage"
-version = "2026.9.1"
-commit = "17665e2b57ad45138c8d809a77915b2aabfa3b24"
+release_url = "https://github.com/asl/BandageNG/releases/tag/v2026.10.1"
+downloads = "https://github.com/asl/BandageNG/releases/download/v2026.10.1/BandageNG-Linux-4ac44b0.AppImage"
+version = "2026.10.1"
+commit = "4ac44b0cecbc056a212e8d65d27e3fcf4c0ebbc7"
 license = "GPL-3.0-or-later"
 citation = "BandageNG is a modern fork of Bandage for interactive visualization of de novo assembly graphs. BandageNG upstream currently lists citation as TBD; for the original Bandage publication see Wick et al. 2015, Bioinformatics."
 doi = "10.1093/bioinformatics/btv383"
@@ -46,5 +46,5 @@ strip_prefix = "v"
 [smoke]
 backend = "docker"
 timeout = 180
-exist = ["BandageNG", "bandage-ng", "bandage-ng-gui", "bandage-ng-smoke", "Xvfb", "x11vnc", "websockify", "twm", "xdotool", "makeblastdb", "blastn", "tblastn", "minimap2", "nhmmer", "hmmsearch", "curl", "sh"]
-test = ["bandage-ng-smoke identity", "bandage-ng-smoke connected-component", "bandage-ng-smoke gui-session-term", "bandage-ng-smoke gui-startup-interrupt", "bandage-ng-smoke gui-errors", "bandage-ng-smoke wm-startup-failure", "bandage-ng-smoke wm-runtime-failure"]
+exist = ["BandageNG", "bandage-ng", "bandage-ng-gui", "bandage-ng-smoke", "Xvfb", "x11vnc", "websockify", "twm", "xdotool", "makeblastdb", "blastn", "tblastn", "minimap2", "nhmmer", "hmmsearch", "curl", "sh", "python3", "xdpyinfo", "xwininfo", "dbus-run-session"]
+test = ["bandage-ng-smoke identity", "bandage-ng-smoke connected-component", "bandage-ng-smoke numeric-depth", "bandage-ng-smoke gui-session-term", "bandage-ng-smoke gui-startup-interrupt", "bandage-ng-smoke gui-errors", "bandage-ng-smoke wm-startup-failure", "bandage-ng-smoke wm-runtime-failure", "python3 /usr/local/libexec/bandage-ng/session-contract.py privacy", "python3 /usr/local/libexec/bandage-ng/session-contract.py protocol", "python3 /usr/local/libexec/bandage-ng/session-contract.py early"]

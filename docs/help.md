@@ -1,4 +1,4 @@
-taf-bandage-ng 2026.9.1-r1
+taf-bandage-ng 2026.10.1-r1
 
 Purpose:
   Inspect GFA/FASTG assembly graphs in a browser-served BandageNG desktop, or
@@ -51,7 +51,7 @@ Paths containing spaces (TAFFISH 0.11.0):
     taf-bandage-ng bandage-ng image \
       '"graph with spaces.gfa"' '"output with spaces.svg"'
 
-Draw one complete connected component (new in 2026.9.1):
+Draw one complete connected component:
   taf-bandage-ng bandage-ng image graph.gfa component.svg \
     --scope aroundcomponent --nodes NODE_ID
   Use --path NAME or --walk NAME instead of/in addition to --nodes. Multiple

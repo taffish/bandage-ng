@@ -1,421 +1,333 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/python3
+"""Start BandageNG in a supervised browser-accessible noVNC session."""
+import argparse
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import resource
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+import uuid
 
-usage() {
-    cat <<'EOF'
-bandage-ng-gui - start BandageNG in a supervised browser-accessible noVNC session
+sys.dont_write_bytecode = True
 
-Usage:
-  bandage-ng-gui [options] [-- BandageNG-args...]
 
-Options:
-  --port PORT            noVNC HTTP port inside the container (default: 5801)
-  --vnc-port PORT        internal VNC port (default: 5901)
-  --display DISPLAY      X display to create (default: :1)
-  --geometry WxH         virtual screen size (default: 1440x900)
-  --window-top-offset PX top safe area for the fitted window (default: 48)
-  --no-fit-window        keep the upstream application's native window size
-  --bind-address IP      noVNC listen address (default: 0.0.0.0)
-  --url-host HOST        host printed in the browser URL (default: 127.0.0.1)
-  --host-port PORT       host port printed in the URL (default: --port)
-  --password PASS        require a VNC password
-  --no-password          do not require a VNC password (default)
-  --startup-timeout SEC  readiness timeout (default: 120)
-  -h, --help             show this help
+def emit(message):
+    try:
+        print(message, flush=True)
+    except OSError as error:
+        if error.errno not in (5, 32):
+            raise
+        # Complete child cleanup even after the terminal closes; logging must not interrupt finally.
+        sys.stdout = open(os.devnull, 'w')
 
-The helper starts Xvfb, twm, x11vnc, noVNC and BandageNG as one
-supervised session. Map --port to the host before opening the printed URL.
-Press Ctrl-C to stop every component.
-EOF
-}
 
-port=5801
-vnc_port=5901
-display=:1
-geometry=1440x900
-window_top_offset=48
-fit_window=true
-bind_address=0.0.0.0
-url_host=127.0.0.1
-host_port=
-password=
-startup_timeout=120
+def arguments():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--window-top-offset', type=int, default=48)
+    p.add_argument('--no-fit-window', action='store_true')
+    auth = p.add_mutually_exclusive_group()
+    auth.add_argument('--password')
+    auth.add_argument('--no-password', action='store_true')
+    p.add_argument('upstream', nargs=argparse.REMAINDER)
+    p.add_argument('--log-dir', type=Path, help='optional persistent parent for a unique private session/log directory')
+    p.add_argument('--port', type=int, default=5801, help='HTTP port, default 5801')
+    p.add_argument('--host-port', type=int, help='host mapped HTTP port for printed URL')
+    p.add_argument('--vnc-port', type=int, default=5901)
+    p.add_argument('--display', default=':1')
+    p.add_argument('--geometry', default='1440x900', help='virtual desktop WIDTHxHEIGHT: 640..3840 by 480..2160 (default: 1440x900)')
+    p.add_argument('--bind-address', default='0.0.0.0', choices=['0.0.0.0', '127.0.0.1'])
+    p.add_argument('--url-host', default='127.0.0.1', help='printed host name only; does not change listening address')
+    p.add_argument('--startup-timeout', type=float, default=120)
+    a = p.parse_args()
+    if not re.fullmatch(r':[0-9]{1,4}', a.display):
+        p.error('display must have the form :N')
+    match = re.fullmatch(r'([0-9]+)x([0-9]+)', a.geometry)
+    if not match:
+        p.error('--geometry must look like 1440x900')
+    a.width, a.height = map(int, match.groups())
+    if not 640 <= a.width <= 3840 or not 480 <= a.height <= 2160:
+        p.error('desktop bounds: width 640..3840, height 480..2160')
+    if a.window_top_offset < 0:
+        p.error('--window-top-offset must be a non-negative integer')
+    if not a.no_fit_window and (a.width - 20 < 640 or a.height - a.window_top_offset - 34 < 480):
+        p.error('too small for the fitted workbench')
+    if any(not 1024 <= port <= 65535 for port in (a.port, a.vnc_port, a.host_port if a.host_port is not None else a.port)) or a.port == a.vnc_port:
+        p.error('use distinct unprivileged HTTP/VNC ports, at most 65535')
+    if not 1 <= a.startup_timeout <= 300:
+        p.error('startup timeout must be 1..300 seconds')
+    if not re.fullmatch(r'[A-Za-z0-9._-]+', a.url_host):
+        p.error('url-host must be a hostname or IPv4 address')
+    a.outdir = Path.cwd()
+    if a.upstream[:1] == ['--']:
+        a.upstream.pop(0)
+    return a
 
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --port) port="${2:?missing value for --port}"; shift 2 ;;
-        --vnc-port) vnc_port="${2:?missing value for --vnc-port}"; shift 2 ;;
-        --display) display="${2:?missing value for --display}"; shift 2 ;;
-        --geometry) geometry="${2:?missing value for --geometry}"; shift 2 ;;
-        --window-top-offset) window_top_offset="${2:?missing value for --window-top-offset}"; shift 2 ;;
-        --no-fit-window) fit_window=false; shift ;;
-        --bind-address) bind_address="${2:?missing value for --bind-address}"; shift 2 ;;
-        --url-host) url_host="${2:?missing value for --url-host}"; shift 2 ;;
-        --host-port) host_port="${2:?missing value for --host-port}"; shift 2 ;;
-        --password) password="${2:?missing value for --password}"; shift 2 ;;
-        --no-password) password=; shift ;;
-        --startup-timeout) startup_timeout="${2:?missing value for --startup-timeout}"; shift 2 ;;
-        -h|--help) usage; exit 0 ;;
-        --) shift; break ;;
-        *) echo "bandage-ng-gui: unknown helper option: $1" >&2; usage >&2; exit 2 ;;
-    esac
-done
 
-require_integer() {
-    option="$1"
-    value="$2"
-    case "$value" in
-        ''|*[!0-9]*) echo "bandage-ng-gui: $option must be a positive integer" >&2; exit 2 ;;
-    esac
-    [ "$value" -gt 0 ] || {
-        echo "bandage-ng-gui: $option must be a positive integer" >&2
-        exit 2
-    }
-}
+class Session:
+    def __init__(self, args):
+        self.a = args
+        self.stopping = 0
+        self.children = {}
+        self.logs = []
+        self.endpoints = {}
+        self.ready = False
+        if args.log_dir:
+            args.log_dir = args.log_dir.resolve()
+            args.log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.root = Path(tempfile.mkdtemp(prefix='bandage-ng-gui-', dir=args.log_dir))
+        os.chmod(self.root, 0o700)
+        self.token = uuid.uuid4().hex
+        self.env = os.environ.copy()
+        for key, name in [('HOME', 'home'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'),
+                          ('XDG_RUNTIME_DIR', 'runtime'), ('TMPDIR', 'tmp')]:
+            path = self.root / name
+            path.mkdir(mode=0o700)
+            self.env[key] = str(path)
+        self.env.update(DISPLAY=args.display, TMP=self.env['TMPDIR'], TEMP=self.env['TMPDIR'],
+                        PYTHONDONTWRITEBYTECODE='1')
+        self.env.pop('DBUS_SESSION_BUS_ADDRESS', None)
+        for key, value in [('LIBGL_ALWAYS_SOFTWARE', '1'), ('QT_OPENGL', 'software'), ('QT_X11_NO_MITSHM', '1'), ('QT_XKB_CONFIG_ROOT', '/usr/share/X11/xkb')]:
+            self.env.setdefault(key, value)
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, self.on_signal)
 
-require_nonnegative_integer() {
-    option="$1"
-    value="$2"
-    case "$value" in
-        ''|*[!0-9]*) echo "bandage-ng-gui: $option must be a non-negative integer" >&2; exit 2 ;;
-    esac
-}
+    def on_signal(self, number, frame):
+        # Do not raise asynchronously: register the PID after Popen returns before entering the stop path.
+        self.stopping = self.stopping or (signal.SIGTERM if number == signal.SIGHUP else number)
 
-require_port() {
-    require_integer "$1" "$2"
-    [ "$2" -le 65535 ] || {
-        echo "bandage-ng-gui: $1 must be at most 65535" >&2
-        exit 2
-    }
-}
+    def start(self, name, command):
+        if self.stopping:
+            raise InterruptedError()
+        log = (self.root / (name + '.log')).open('wb')
+        self.logs.append(log)
+        child = subprocess.Popen(command, env=self.env, cwd=self.a.outdir, stdout=log,
+                                 stderr=subprocess.STDOUT, start_new_session=True,
+                                 umask=-1)
+        self.children[name] = child
+        if name == 'wm':
+            (self.root / 'window-manager.pid').write_text(str(child.pid))
+        (self.root / 'processes.json').write_text(json.dumps({k: v.pid for k, v in self.children.items()}))
+        if self.stopping:
+            raise InterruptedError()
 
-case "$geometry" in
-    *x*) width="${geometry%%x*}"; height="${geometry#*x}" ;;
-    *) width=; height= ;;
-esac
-geometry_valid=true
-case "$width" in ''|*[!0-9]*) geometry_valid=false ;; esac
-case "$height" in ''|*[!0-9]*) geometry_valid=false ;; esac
-if [ "$geometry_valid" = true ]; then
-    [ "$width" -gt 0 ] && [ "$height" -gt 0 ] || geometry_valid=false
-fi
-[ "$geometry_valid" = true ] && [ "$geometry" = "${width}x${height}" ] || {
-    echo 'bandage-ng-gui: --geometry must look like 1440x900' >&2
-    exit 2
-}
+    def check(self):
+        if self.stopping:
+            raise InterruptedError()
+        for name, child in self.children.items():
+            if child.poll() is not None:
+                raise RuntimeError(f'{"window-manager" if name == "wm" else name} exited {"after" if self.ready else "before"} readiness ({child.returncode}); log: {self.root / (name + ".log")}')
 
-case "$display" in
-    :*) display_number="${display#:}" ;;
-    *) display_number= ;;
-esac
-require_integer '--display number' "$display_number"
-require_port '--port' "$port"
-require_port '--vnc-port' "$vnc_port"
-require_integer '--startup-timeout' "$startup_timeout"
-require_nonnegative_integer '--window-top-offset' "$window_top_offset"
-[ -n "$bind_address" ] || { echo 'bandage-ng-gui: --bind-address must not be empty' >&2; exit 2; }
-[ -n "$url_host" ] || { echo 'bandage-ng-gui: --url-host must not be empty' >&2; exit 2; }
-if [ -z "$host_port" ]; then host_port="$port"; fi
-require_port '--host-port' "$host_port"
+    def run(self, argv):
+        return subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=3)
 
-window_margin=10
-window_decoration_reserve=24
-fit_width=$((width - (2 * window_margin)))
-fit_height=$((height - window_top_offset - window_margin - window_decoration_reserve))
-if [ "$fit_window" = true ]; then
-    [ "$fit_width" -ge 640 ] && [ "$fit_height" -ge 480 ] || {
-        echo 'bandage-ng-gui: --geometry is too small for the fitted workbench and top offset' >&2
-        exit 2
-    }
-fi
+    def capture_endpoints(self):
+        child = self.children.get('xvfb')
+        if not child:
+            return
+        number = self.a.display[1:]
+        lock = Path('/tmp/.X' + number + '-lock')
+        sock = Path('/tmp/.X11-unix/X' + number)
+        try:
+            ls = lock.lstat()
+            if not stat.S_ISREG(ls.st_mode) or int(lock.read_text().strip()) != child.pid:
+                return
+            self.endpoints[str(lock)] = (ls.st_dev, ls.st_ino)
+            ss = sock.lstat()
+            if stat.S_ISSOCK(ss.st_mode):
+                self.endpoints[str(sock)] = (ss.st_dev, ss.st_ino)
+        except (OSError, ValueError):
+            pass
 
-export DISPLAY="$display"
-export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
-export QT_OPENGL="${QT_OPENGL:-software}"
-export QT_X11_NO_MITSHM="${QT_X11_NO_MITSHM:-1}"
-export QT_XKB_CONFIG_ROOT="${QT_XKB_CONFIG_ROOT:-/usr/share/X11/xkb}"
-export QT_LOGGING_RULES="${QT_LOGGING_RULES:-*.debug=false;qt.qpa.*=false}"
-log_dir="/tmp/bandage-ng-gui-$$"
-runtime_dir="$log_dir/runtime"
-home_dir="$log_dir/home"
-mkdir -p /tmp/.X11-unix "$log_dir" "$runtime_dir" "$home_dir"
-chmod 0700 "$runtime_dir" "$home_dir"
-export HOME="$home_dir"
-export XDG_RUNTIME_DIR="$runtime_dir"
-export XDG_CONFIG_HOME="$log_dir/config"
-export TMPDIR="$log_dir/tmp"
-mkdir -p "$XDG_CONFIG_HOME" "$TMPDIR"
+    def listener_owned(self, name, port):
+        # The listening inode in Linux /proc must belong to this child; do not reuse an existing listener.
+        child = self.children[name]
+        sockets = set()
+        for fd in Path(f'/proc/{child.pid}/fd').glob('*'):
+            try:
+                sockets.add(os.readlink(fd))
+            except OSError:
+                pass
+        for line in Path('/proc/net/tcp').read_text().splitlines()[1:]:
+            cols = line.split()
+            if int(cols[1].split(':')[1], 16) == port and cols[3] == '0A':
+                if 'socket:[' + cols[9] + ']' in sockets:
+                    return True
+        return False
 
-gui_url="http://${url_host}:${host_port}/vnc.html?autoconnect=1&resize=scale"
-shutdown_grace=5
-xvfb_pid=
-wm_pid=
-x11vnc_pid=
-app_pid=
-novnc_pid=
-probe_pid=
-auth_file=
-main_window_id=
-main_window_x=
-main_window_y=
-main_window_width=
-main_window_height=
-last_window_id=
-stable_window_count=0
-cleanup_in_progress=false
+    def window(self):
+        found = self.run(['xdotool', 'search', '--onlyvisible', '--name', 'Bandage'])
+        if found.returncode:
+            return None
+        for wid in found.stdout.split():
+            name = self.run(['xdotool', 'getwindowname', wid]).stdout.strip()
+            if not re.match(r'^Bandage-?NG(?:$| - )', name):
+                continue
+            w, h = self.a.width - 20, self.a.height - self.a.window_top_offset - 34
+            if not self.a.no_fit_window:
+                self.run(['xdotool', 'windowsize', wid, str(w), str(h)])
+                self.run(['xdotool', 'windowmove', wid, '12', str(self.a.window_top_offset + 2)])
+            # Use absolute X server coordinates rather than hard-coded reparenting offsets.
+            data = self.run(['xwininfo', '-id', wid]).stdout
+            labels = {'X': 'Absolute upper-left X', 'Y': 'Absolute upper-left Y',
+                      'WIDTH': 'Width', 'HEIGHT': 'Height'}
+            values = {'WINDOW': wid}
+            for key, label in labels.items():
+                match = re.search(r'^\s*' + label + r':\s*(-?\d+)\s*$', data, re.M)
+                if match:
+                    values[key] = match.group(1)
+            if not all(key in values for key in ('X', 'Y', 'WIDTH', 'HEIGHT')):
+                continue
+            x, y, width, height = [int(values[k]) for k in ('X', 'Y', 'WIDTH', 'HEIGHT')]
+            if self.a.no_fit_window or (width == w and height == h and -24 <= x <= 80 and self.a.window_top_offset - 24 <= y <= self.a.window_top_offset + 80):
+                values['desktop'] = self.a.geometry
+                (self.root / 'geometry.json').write_text(json.dumps(values))
+                return values
+        return None
 
-cleanup() {
-    [ "$cleanup_in_progress" = false ] || return 0
-    cleanup_in_progress=true
-    trap - INT TERM EXIT
-    for pid in "$probe_pid" "$novnc_pid" "$app_pid" "$x11vnc_pid" "$wm_pid" "$xvfb_pid"; do
-        [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true
-    done
-    (
-        sleep "$shutdown_grace"
-        for pid in "$probe_pid" "$novnc_pid" "$app_pid" "$x11vnc_pid" "$wm_pid" "$xvfb_pid"; do
-            [ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null || true
-        done
-    ) &
-    watchdog_pid=$!
-    for pid in "$probe_pid" "$novnc_pid" "$app_pid" "$x11vnc_pid" "$wm_pid" "$xvfb_pid"; do
-        [ -n "$pid" ] && wait "$pid" 2>/dev/null || true
-    done
-    kill "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
-    [ -n "$auth_file" ] && rm -f "$auth_file" 2>/dev/null || true
-}
+    def serve(self):
+        a = self.a
+        emit(f'BandageNG GUI is starting.\nInternal session logs:\n  {self.root}')
+        url = f'http://{a.url_host}:{a.host_port or a.port}/vnc.html?autoconnect=1&resize=scale'
+        emit(f'host URL: {url}')
+        emit(f'SSH: ssh -N -L {a.host_port or a.port}:127.0.0.1:{a.host_port or a.port} user@server')
+        emit('Press Ctrl-C to stop this GUI session. Publish HTTP only on host loopback.')
+        for endpoint in (Path('/tmp/.X' + a.display[1:] + '-lock'), Path('/tmp/.X11-unix/X' + a.display[1:])):
+            if os.path.lexists(endpoint):
+                raise RuntimeError(f'occupied display endpoint (not removed): {endpoint}')
+        for host, port in ((a.bind_address, a.port), ('127.0.0.1', a.vnc_port)):
+            with socket.socket() as probe:
+                # Allow TIME_WAIT as the actual listener does; do not use SO_REUSEPORT.
+                # Active listeners still prevent binding; post-start PID/inode ownership checks guard against races.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind((host, port))
+        web = self.root / 'web'
+        web.mkdir(mode=0o700)
+        for source in Path('/opt/noVNC').iterdir():
+            (web / source.name).symlink_to(source)
+        (web / 'session-id').write_text(self.token)
+        limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(limit[0], 1024), limit[1]))
+        self.start('xvfb', ['Xvfb', a.display, '-screen', '0', a.geometry + 'x24', '-nolisten', 'tcp', '-ac'])
+        deadline = time.monotonic() + a.startup_timeout
+        while self.run(['xdpyinfo', '-display', a.display]).returncode:
+            self.check()
+            self.capture_endpoints()
+            if time.monotonic() > deadline:
+                raise RuntimeError('Xvfb startup timeout')
+            time.sleep(0.05)
+        self.capture_endpoints()
+        config = self.root / 'twmrc'
+        config.write_text('NoGrabServer\nRestartPreviousState\nDecorateTransients\nRandomPlacement\nNoHighlight\n' + ''.join(x + ' "fixed"\n' for x in ['TitleFont', 'ResizeFont', 'MenuFont', 'IconFont', 'IconManagerFont']))
+        self.start('wm', ['env', 'LC_ALL=C', 'twm', '-f', str(config)])
+        auth_args = ['-nopw']
+        if a.password:
+            auth_file = self.root / 'vnc.passwd'
+            self.run(['x11vnc', '-storepasswd', a.password, str(auth_file)]).check_returncode()
+            auth_file.chmod(0o600)
+            auth_args = ['-rfbauth', str(auth_file)]
+        self.start('vnc', ['x11vnc', '-display', a.display, '-rfbport', str(a.vnc_port), '-localhost',
+                           '-forever', '-shared', '-noxdamage', '-noxrecord', '-quiet'] + auth_args)
+        self.start('bridge', ['websockify', '--web', str(web),
+                              a.bind_address + ':' + str(a.port), '127.0.0.1:' + str(a.vnc_port)])
+        self.start('app', ['dbus-run-session', '--', 'BandageNG'] + a.upstream)
+        spec = importlib.util.spec_from_file_location('rfb', '/usr/local/libexec/bandage-ng/rfb-probe.py')
+        rfb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rfb)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        while True:
+            self.check()
+            try:
+                owned = self.listener_owned('vnc', a.vnc_port) and self.listener_owned('bridge', a.port)
+                if owned:
+                    rfb.probe(a.vnc_port, a.width, a.height, password=bool(a.password), timeout=0.5)
+                    with opener.open(f'http://127.0.0.1:{a.port}/session-id', timeout=0.5) as response:
+                        matched = response.read(128).decode() == self.token
+                    g = self.window() if matched else None
+                    if g:
+                        self.check()
+                        break
+            except (OSError, ValueError):
+                pass
+            if time.monotonic() > deadline:
+                raise RuntimeError('GUI readiness timeout; inspect component logs')
+            time.sleep(0.1)
+        self.ready = True
+        emit('BandageNG GUI is ready.')
+        emit(f'Main window: {g["WIDTH"]}x{g["HEIGHT"]} at {g["X"]},{g["Y"]} within {a.geometry} ({"native" if a.no_fit_window else "fit"}).')
+        (self.root / 'window-layout.log').write_text(json.dumps(g))
+        while True:
+            if self.stopping:
+                raise InterruptedError()
+            app = self.children['app']
+            if app.poll() == 0:
+                return 0
+            self.check()
+            time.sleep(0.1)
 
-on_int() {
-    printf '\nStopping BandageNG GUI (Ctrl-C).\n'
-    cleanup
-    exit 130
-}
+    def cleanup(self):
+        reason = 'Ctrl-C' if self.stopping == signal.SIGINT else 'TERM' if self.stopping else 'exit'
+        emit(f'Stopping BandageNG GUI ({reason}).')
+        # An early INT may precede Xvfb socket creation; wait briefly and record only endpoints with matching PID ownership.
+        if 'xvfb' in self.children:
+            for _ in range(10):
+                self.capture_endpoints()
+                if len(self.endpoints) == 2 or self.children['xvfb'].poll() is not None:
+                    break
+                time.sleep(0.05)
+        for child in reversed(list(self.children.values())):
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and any(c.poll() is None for c in self.children.values()):
+            time.sleep(0.05)
+        for child in self.children.values():
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait(timeout=2)
+        for name, identity in self.endpoints.items():
+            path = Path(name)
+            try:
+                info = path.lstat()
+                if not stat.S_ISLNK(info.st_mode) and (info.st_dev, info.st_ino) == identity:
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+        (self.root / 'vnc.passwd').unlink(missing_ok=True)
+        for log in self.logs:
+            log.close()
+        emit('stopped; owned process groups and display endpoints cleaned')
 
-on_term() {
-    printf '\nStopping BandageNG GUI (TERM).\n'
-    cleanup
-    exit 143
-}
 
-trap on_int INT
-trap on_term TERM
-trap cleanup EXIT
+def main():
+    session = Session(arguments())
+    result = 1
+    try:
+        result = session.serve()
+    except InterruptedError:
+        result = 128 + session.stopping
+    except Exception as error:
+        emit(f'ERROR: {error}')
+        for name in session.children:
+            path = session.root / (name + '.log')
+            tail = path.read_text(errors='replace').splitlines()[-10:]
+            emit(f'{name} log tail:\n' + '\n'.join(tail))
+    finally:
+        session.cleanup()
+    return result
 
-critical_alive_before_ready() {
-    for pair in "$xvfb_pid:Xvfb:xvfb.log" \
-                "$wm_pid:window-manager:window-manager.log" \
-                "$x11vnc_pid:x11vnc:x11vnc.log" \
-                "$app_pid:BandageNG:application.log" \
-                "$novnc_pid:noVNC:novnc.log"; do
-        pid="${pair%%:*}"
-        rest="${pair#*:}"
-        name="${rest%%:*}"
-        log="${rest#*:}"
-        [ -n "$pid" ] || continue
-        kill -0 "$pid" 2>/dev/null || {
-            echo "bandage-ng-gui: $name exited before readiness; see $log_dir/$log" >&2
-            tail -n 80 "$log_dir/$log" >&2 || true
-            exit 1
-        }
-    done
-}
 
-find_main_window() {
-    main_window_id=
-    best_area=0
-    candidates="$(xdotool search --onlyvisible --name 'Bandage' 2>/dev/null || true)"
-    for candidate_id in $candidates; do
-        candidate_name="$(xdotool getwindowname "$candidate_id" 2>/dev/null || true)"
-        case "$candidate_name" in
-            BandageNG|BandageNG\ -\ *|Bandage-NG|Bandage-NG\ -\ *) ;;
-            *) continue ;;
-        esac
-        candidate_geometry="$(xdotool getwindowgeometry --shell "$candidate_id" 2>/dev/null || true)"
-        candidate_width="$(printf '%s\n' "$candidate_geometry" | awk -F= '$1 == "WIDTH" { print $2 }')"
-        candidate_height="$(printf '%s\n' "$candidate_geometry" | awk -F= '$1 == "HEIGHT" { print $2 }')"
-        case "$candidate_width:$candidate_height" in *[!0-9:]*|:|*:|:*) continue ;; esac
-        [ "$candidate_width" -ge 600 ] && [ "$candidate_height" -ge 400 ] || continue
-        candidate_area=$((candidate_width * candidate_height))
-        if [ "$candidate_area" -gt "$best_area" ]; then
-            best_area="$candidate_area"
-            main_window_id="$candidate_id"
-        fi
-    done
-    [ -n "$main_window_id" ]
-}
-
-record_main_window_geometry() {
-    main_geometry="$(xdotool getwindowgeometry --shell "$main_window_id" 2>/dev/null || true)"
-    main_window_x="$(printf '%s\n' "$main_geometry" | awk -F= '$1 == "X" { print $2 }')"
-    main_window_y="$(printf '%s\n' "$main_geometry" | awk -F= '$1 == "Y" { print $2 }')"
-    main_window_width="$(printf '%s\n' "$main_geometry" | awk -F= '$1 == "WIDTH" { print $2 }')"
-    main_window_height="$(printf '%s\n' "$main_geometry" | awk -F= '$1 == "HEIGHT" { print $2 }')"
-    case "$main_window_x" in ''|-|*[!0-9-]*) return 1 ;; esac
-    case "$main_window_y" in ''|-|*[!0-9-]*) return 1 ;; esac
-    case "$main_window_width" in ''|*[!0-9]*) return 1 ;; esac
-    case "$main_window_height" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$main_window_width" -gt 0 ] && [ "$main_window_height" -gt 0 ]
-}
-
-fit_main_window() {
-    [ "$fit_window" = true ] || return 0
-    printf 'requested main window: %sx%s at %s,%s within %s\n' \
-      "$fit_width" "$fit_height" "$((window_margin + 2))" \
-      "$((window_top_offset + 2))" "$geometry" \
-      >>"$log_dir/window-layout.log"
-    xdotool windowsize --sync "$main_window_id" "$fit_width" "$fit_height" \
-      >>"$log_dir/window-layout.log" 2>&1 || return 1
-    xdotool windowmove --sync "$main_window_id" \
-      "$((window_margin + 2))" "$((window_top_offset + 2))" \
-      >>"$log_dir/window-layout.log" 2>&1 || return 1
-}
-
-cat <<EOF
-
-BandageNG GUI is starting.
-
-Open this URL after mapping the container port to the host:
-  ${gui_url}
-
-If this is running on a remote server over SSH, tunnel the host port first:
-  ssh -N -L ${host_port}:127.0.0.1:${host_port} user@server
-
-Then open the same URL in your local browser after the ready message.
-
-Press Ctrl-C to stop this GUI session.
-Internal session logs:
-  ${log_dir}
-
-Virtual desktop and main-window layout:
-  ${geometry}; $(if [ "$fit_window" = true ]; then printf 'fit with %spx top safe area' "$window_top_offset"; else printf 'native application size'; fi)
-
-EOF
-
-Xvfb "$display" -screen 0 "${geometry}x24" -nolisten tcp >"$log_dir/xvfb.log" 2>&1 &
-xvfb_pid=$!
-i=0
-while [ ! -S "/tmp/.X11-unix/X${display_number}" ]; do
-    kill -0 "$xvfb_pid" 2>/dev/null || {
-        echo "bandage-ng-gui: Xvfb failed; see $log_dir/xvfb.log" >&2
-        tail -n 80 "$log_dir/xvfb.log" >&2 || true
-        exit 1
-    }
-    i=$((i + 1))
-    [ "$i" -lt "$startup_timeout" ] || {
-        echo 'bandage-ng-gui: Xvfb readiness timed out' >&2
-        exit 1
-    }
-    sleep 1
-done
-
-cat >"$log_dir/twmrc" <<'EOF'
-NoGrabServer
-RestartPreviousState
-DecorateTransients
-RandomPlacement
-NoHighlight
-TitleFont "fixed"
-ResizeFont "fixed"
-MenuFont "fixed"
-IconFont "fixed"
-IconManagerFont "fixed"
-EOF
-LC_ALL=C twm -f "$log_dir/twmrc" >"$log_dir/window-manager.log" 2>&1 &
-wm_pid=$!
-printf '%s\n' "$wm_pid" >"$log_dir/window-manager.pid"
-
-if [ -n "$password" ]; then
-    auth_file="$log_dir/vnc.passwd"
-    x11vnc -storepasswd "$password" "$auth_file" >/dev/null 2>&1
-    x11vnc -display "$display" -localhost -rfbport "$vnc_port" -rfbauth "$auth_file" -forever -shared -quiet >"$log_dir/x11vnc.log" 2>&1 &
-else
-    x11vnc -display "$display" -localhost -rfbport "$vnc_port" -nopw -forever -shared -quiet >"$log_dir/x11vnc.log" 2>&1 &
-fi
-x11vnc_pid=$!
-
-dbus-run-session -- BandageNG "$@" >"$log_dir/application.log" 2>&1 &
-app_pid=$!
-/opt/noVNC/utils/novnc_proxy --listen "${bind_address}:${port}" --vnc "127.0.0.1:${vnc_port}" >"$log_dir/novnc.log" 2>&1 &
-novnc_pid=$!
-
-i=0
-while :; do
-    critical_alive_before_ready
-    curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:${port}/vnc.html" >/dev/null 2>&1 &
-    probe_pid=$!
-    http_ready=false
-    if wait "$probe_pid"; then http_ready=true; fi
-    probe_pid=
-    window_ready=false
-    if find_main_window; then
-        if [ "$main_window_id" = "$last_window_id" ]; then
-            stable_window_count=$((stable_window_count + 1))
-        else
-            last_window_id="$main_window_id"
-            stable_window_count=1
-        fi
-        [ "$stable_window_count" -ge 2 ] && window_ready=true
-    else
-        last_window_id=
-        stable_window_count=0
-    fi
-    critical_alive_before_ready
-    if [ "$http_ready" = true ] && [ "$window_ready" = true ]; then
-        fit_main_window || {
-            echo "bandage-ng-gui: failed to fit the main window; see $log_dir/window-layout.log" >&2
-            tail -n 80 "$log_dir/window-layout.log" >&2 || true
-            exit 1
-        }
-        sleep 1
-        record_main_window_geometry || {
-            echo 'bandage-ng-gui: could not read the main-window geometry' >&2
-            exit 1
-        }
-        printf 'observed main window: %sx%s at %s,%s within %s\n' \
-          "$main_window_width" "$main_window_height" "$main_window_x" \
-          "$main_window_y" "$geometry" >>"$log_dir/window-layout.log"
-        critical_alive_before_ready
-        break
-    fi
-    i=$((i + 1))
-    [ "$i" -lt "$startup_timeout" ] || {
-        echo "bandage-ng-gui: GUI readiness timed out; logs are in $log_dir" >&2
-        tail -n 80 "$log_dir/application.log" >&2 || true
-        exit 1
-    }
-    sleep 1
-done
-
-printf '\nBandageNG GUI is ready.\n'
-printf 'Main window: %sx%s at %s,%s within %s (%s).\n' \
-  "$main_window_width" "$main_window_height" "$main_window_x" "$main_window_y" "$geometry" \
-  "$(if [ "$fit_window" = true ]; then printf fit; else printf native; fi)"
-
-status=0
-while :; do
-    if ! kill -0 "$app_pid" 2>/dev/null; then
-        wait "$app_pid" || status=$?
-        app_pid=
-        break
-    fi
-    for pair in "$xvfb_pid:Xvfb:xvfb.log" \
-                "$wm_pid:window-manager:window-manager.log" \
-                "$x11vnc_pid:x11vnc:x11vnc.log" \
-                "$novnc_pid:noVNC:novnc.log"; do
-        pid="${pair%%:*}"
-        rest="${pair#*:}"
-        name="${rest%%:*}"
-        log="${rest#*:}"
-        if ! kill -0 "$pid" 2>/dev/null; then
-            echo "bandage-ng-gui: $name exited after readiness; see $log_dir/$log" >&2
-            tail -n 80 "$log_dir/$log" >&2 || true
-            status=1
-            break 2
-        fi
-    done
-    sleep 1
-done
-
-cleanup
-exit "$status"
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,6 @@
+{
+  "artifact": "taf-bandage-ng-v2026.10.1-r1",
+  "schema": "taffish.build/v1",
+  "source_sha256": "3cabf3d0442e30baf53a8510299fb699854705f615384b22c1f63f3fd2d67781",
+  "wrapper_sha256": "0bdbd76b5151b7566b9dbd795c48e21124836ec504091ae3ca97c76642e9d7f2"
+}
